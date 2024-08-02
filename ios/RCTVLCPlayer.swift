@@ -18,25 +18,25 @@ import TVVLCKit
 class RCTVLCPlayer : UIView {
     let mediaURL = "https://streams.videolan.org/streams/mp4/Mr_MrsSmith-h264_aac.mp4"
     
-    private var _eventDispatcher:RCTEventDispatcher!
-    private var _player:VLCMediaPlayer!
-    private var _source:NSDictionary!
+    private var _eventDispatcher: RCTEventDispatcher!
+    private var _player: VLCMediaPlayer!
+    private var _source: NSDictionary!
     private var _paused = false
     private var _started = false
-    private var _subtitleUri:String!
-    private var _videoInfo:[String: Any]!
+    private var _subtitleUri: String!
+    private var _videoInfo: [String: Any]!
+    private var _progressTimer: Timer?
+    private var _bufferingTimer: Timer?
+    private var _bufferingProgress: Float = 0.0
     
     private var _pendingSeek = false
     
     init(eventDispatcher: RCTEventDispatcher!) {
         super.init(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
         _eventDispatcher = eventDispatcher
-        NotificationCenter.default.addObserver(self, selector: #selector(UIApplicationDelegate.applicationWillResignActive(_:)), name: UIApplication.willResignActiveNotification, object: nil)
-        
-        NotificationCenter.default.addObserver(self, selector: #selector(UIApplicationDelegate.applicationWillEnterForeground(_:)), name: UIApplication.willEnterForegroundNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(applicationWillResignActive(_:)), name: UIApplication.willResignActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(applicationWillEnterForeground(_:)), name: UIApplication.willEnterForegroundNotification, object: nil)
     }
-    
-    
     
     required init?(coder: NSCoder) {
         super.init(coder: coder)
@@ -55,28 +55,37 @@ class RCTVLCPlayer : UIView {
     @objc var onVideoError: RCTDirectEventBlock?
     
     @objc
-    func applicationWillResignActive(notification: NSNotification) {
-        if(!paused) {
+    func applicationWillResignActive(_ notification: NSNotification) {
+        if !paused {
             paused = true
         }
     }
     
     @objc
-    func applicationWillEnterForeground(notification: NSNotification) {
+    func applicationWillEnterForeground(_ notification: NSNotification) {
         self.applyModifiers()
     }
     
     func applyModifiers() {
-        if(!paused) {
+        if !paused {
             self.play()
         }
     }
     
     func play() {
-        if(_player != nil) {
+        if _player != nil {
             _player.play()
             _paused = false
             _started = true
+            startProgressTimer()
+        }
+    }
+    
+    func pause() {
+        if _player != nil {
+            _player.pause()
+            _paused = true
+            stopProgressTimer()
         }
     }
     
@@ -87,14 +96,13 @@ class RCTVLCPlayer : UIView {
         }
         
         playMedia(_source)
-        
     }
     
     @objc
     func setSource(_ source: NSDictionary) {
-        print("Source \(source as AnyObject)")
+        NSLog("Source \(source as AnyObject)")
         
-        if(_player != nil) {
+        if _player != nil {
             _release()
         }
         _source = source
@@ -107,7 +115,6 @@ class RCTVLCPlayer : UIView {
         }
         
         self.play()
-        
     }
     
     private func playMedia(_ source: NSDictionary) {
@@ -120,7 +127,7 @@ class RCTVLCPlayer : UIView {
         _player.delegate = self
         _player.scaleFactor = 0
         
-        let media = VLCMedia.init(url: URL(string: uri)!)
+        let media = VLCMedia(url: URL(string: uri)!)
         
         if let initOptions = source["initOptions"] as? [String: String] {
             media.addOptions(initOptions)
@@ -130,7 +137,7 @@ class RCTVLCPlayer : UIView {
         _player.delegate = self
         
         try? AVAudioSession.sharedInstance().setActive(false, options: AVAudioSession.SetActiveOptions.notifyOthersOnDeactivation)
-        print("Autoplay: \(autoPlay)")
+        NSLog("Autoplay: \(autoPlay)")
         
         self.onVideoLoad?([
             "target": self.reactTag
@@ -149,10 +156,10 @@ class RCTVLCPlayer : UIView {
     @objc
     func setSeek(_ pos: Float) {
         // TODO: add seeking with jumping forward
-        print("Seek: \(pos)")
-        if(_player != nil && pos >= 0 && pos <= 1) {
+        NSLog("Seek: \(pos)")
+        if _player != nil && pos >= 0 && pos <= 1 {
             _player.position = pos
-            if(!_player.isPlaying) {
+            if !_player.isPlaying {
                 _player.play()
             }
         }
@@ -183,11 +190,11 @@ class RCTVLCPlayer : UIView {
     @objc var paused: Bool = false {
         didSet {
             self._paused = paused
-            if(_player != nil) {
-                if(!paused) {
+            if _player != nil {
+                if !paused {
                     self.play()
-                } else if(_player.canPause) {
-                    _player.pause()
+                } else if _player.canPause {
+                    self.pause()
                 }
             }
         }
@@ -195,8 +202,7 @@ class RCTVLCPlayer : UIView {
     
     @objc var muted: Bool = false {
         didSet {
-            if(_player != nil) {
-                // Deprecated ???
+            if _player != nil {
                 _player.audio?.setMute(muted)
             }
         }
@@ -204,25 +210,27 @@ class RCTVLCPlayer : UIView {
     
     @objc var rate: Float = 1.0 {
         didSet {
-            if(_player != nil) {
+            if _player != nil {
                 _player.rate = rate
             }
         }
     }
     
     func _release() {
-        if(_player != nil) {
+        if _player != nil {
             _player.pause()
             _player.stop()
             _player = nil
             _eventDispatcher = nil
             NotificationCenter.default.removeObserver(self)
+            stopProgressTimer()
+            stopBufferingTimer()
         }
     }
     
     func getVideoInfo() -> [String: Any] {
         var info: [String: Any] = [:]
-        if(_player == nil) {
+        if _player == nil {
             return info
         }
         
@@ -260,101 +268,42 @@ class RCTVLCPlayer : UIView {
             }
             info["trackTracks"] = tracks
         }
+
         return info
     }
     
     override func removeFromSuperview() {
-        print("Remove from Superview")
+        NSLog("Remove from Superview")
         _release()
         super.removeFromSuperview()
     }
-}
-
-extension RCTVLCPlayer : VLCMediaPlayerDelegate {
     
-    internal func mediaPlayerTimeChanged(_ aNotification: Notification) {
-        self.updateVideoProcess()
+    private func startProgressTimer() {
+        _progressTimer = Timer.scheduledTimer(timeInterval: 1.0, target: self, selector: #selector(updateVideoProgress), userInfo: nil, repeats: true)
     }
     
-    func mediaPlayerStateChanged(_ aNotification: Notification) {
-        let defaults = UserDefaults.standard
-        print("userInfo \(aNotification.userInfo)")
-        print("standardUserDefaults \(defaults)")
-        
-        if(_player != nil) {
-            let state = _player.state
-            switch(state) {
-            case .opening:
-                print("VLCMediaPlayerStateOpening \(_player.numberOfAudioTracks)")
-                onVideoOpen?([
-                    "target": reactTag,
-                ])
-                break
-            case .paused:
-                _paused = true
-                print("VLCMediaPlayerStatePaused \(_player.numberOfAudioTracks)")
-                onVideoPaused?([
-                    "target": reactTag,
-                ])
-                break
-            case .stopped:
-                print("VLCMediaPlayerStateStopped \(_player.numberOfAudioTracks)")
-                onVideoStopped?([
-                    "target": reactTag,
-                ])
-                break
-            case .buffering:
-                print("VLCMediaPlayerStateBuffering \(_player.numberOfAudioTracks)")
-                if((_videoInfo == nil) && _player.numberOfAudioTracks > 0) {
-                    _videoInfo = getVideoInfo();
-                    onVideoLoad?(_videoInfo);
-                }
-                break
-            case .ended:
-                print("VLCMediaPlayerStateEnded \(_player.numberOfAudioTracks)")
-                let currentTime = _player.time.intValue
-                let remainingTime = _player.remainingTime?.intValue ?? 0
-                let duration = _player.media?.length.intValue ?? 0
-                
-                print("VideoCallback Null: \(onVideoEnded)")
-                
-                onVideoEnded?([
-                    "currentTime": NSNumber(value: currentTime),
-                    "remainingTime": NSNumber(value: remainingTime),
-                    "duration": NSNumber(value: duration),
-                    "target": reactTag,
-                ])
-            case .playing:
-                print("VLCMediaPlayerStatePlaying \(_player.numberOfAudioTracks)")
-                onVideoPlaying?([
-                    "duration": NSNumber(value: _player.media?.length.intValue ?? 0),
-                    "seekable": NSNumber(value: _player.isSeekable),
-                    "target": reactTag,
-                ])
-                break
-            case .esAdded:
-                print("VLCMediaPlayerStateESAdded \(_player.numberOfAudioTracks)")
-                break;
-            case .error:
-                print("VLCMediaPlayerStateError \(_player.numberOfAudioTracks)")
-                onVideoError?([
-                    "target": reactTag,
-                ])
-                _release()
-                break
-            @unknown default:
-                break
-            }
-        }
+    private func stopProgressTimer() {
+        _progressTimer?.invalidate()
+        _progressTimer = nil
     }
     
-    private func updateVideoProcess() {
-        if(_player != nil) {
+    private func startBufferingTimer() {
+        _bufferingProgress = 0.0
+        _bufferingTimer = Timer.scheduledTimer(timeInterval: 1.0, target: self, selector: #selector(updateBufferingProgress), userInfo: nil, repeats: true)
+    }
+    
+    private func stopBufferingTimer() {
+        _bufferingTimer?.invalidate()
+        _bufferingTimer = nil
+    }
+    
+    @objc private func updateVideoProgress() {
+        if _player != nil {
             let curTime = _player.time.intValue
             let remainingTime = _player.remainingTime?.intValue ?? 0
             let duration = _player.media?.length.intValue ?? 0
             
-            if(curTime > 0 && curTime < duration) {
+            if curTime > 0 && curTime < duration {
                 onVideoProgress?([
                     "currentTime": NSNumber(value: curTime),
                     "remainingTime": NSNumber(value: remainingTime),
@@ -365,6 +314,103 @@ extension RCTVLCPlayer : VLCMediaPlayerDelegate {
         }
     }
     
+    @objc private func updateBufferingProgress() {
+        _bufferingProgress += 10.0
+        if _bufferingProgress > 100.0 {
+            _bufferingProgress = 100.0
+        }
+        onVideoBuffering?([
+            "target": reactTag,
+            "buffering": _bufferingProgress
+        ])
+    }
+}
+
+extension RCTVLCPlayer: VLCMediaPlayerDelegate {
+    
+    internal func mediaPlayerTimeChanged(_ aNotification: Notification) {
+        self.updateVideoProgress()
+    }
+    
+    func mediaPlayerStateChanged(_ aNotification: Notification) {
+        let defaults = UserDefaults.standard
+        NSLog("userInfo \(aNotification.userInfo)")
+        
+        if _player != nil {
+            let state = _player.state
+            switch state {
+            case .opening:
+                NSLog("VLCMediaPlayerStateOpening \(_player.numberOfAudioTracks)")
+                onVideoOpen?([
+                    "target": reactTag,
+                ])
+            case .paused:
+                _paused = true
+                NSLog("VLCMediaPlayerStatePaused \(_player.numberOfAudioTracks)")
+                onVideoPaused?([
+                    "target": reactTag,
+                ])
+                stopProgressTimer()
+                stopBufferingTimer()
+            case .stopped:
+                NSLog("VLCMediaPlayerStateStopped \(_player.numberOfAudioTracks)")
+                onVideoStopped?([
+                    "target": reactTag,
+                ])
+                stopProgressTimer()
+                stopBufferingTimer()
+            case .buffering:
+                NSLog("VLCMediaPlayerStateBuffering \(_player.numberOfAudioTracks)")
+                _videoInfo = getVideoInfo()
+                onVideoBuffering?([
+                    "target": reactTag,
+                    "videoInfo": _videoInfo
+                ])
+                startBufferingTimer()
+            case .ended:
+                NSLog("VLCMediaPlayerStateEnded \(_player.numberOfAudioTracks)")
+                let currentTime = _player.time.intValue
+                let remainingTime = _player.remainingTime?.intValue ?? 0
+                let duration = _player.media?.length.intValue ?? 0
+                
+                NSLog("VideoCallback Null: \(onVideoEnded)")
+                
+                onVideoEnded?([
+                    "currentTime": NSNumber(value: currentTime),
+                    "remainingTime": NSNumber(value: remainingTime),
+                    "duration": NSNumber(value: duration),
+                    "target": reactTag,
+                ])
+                stopProgressTimer()
+                stopBufferingTimer()
+            case .playing:
+                NSLog("VLCMediaPlayerStatePlaying \(_player.numberOfAudioTracks)")
+                let videoInfo = getVideoInfo()
+                onVideoPlaying?([
+                    "duration": NSNumber(value: _player.media?.length.intValue ?? 0),
+                    "seekable": NSNumber(value: _player.isSeekable),
+                    "target": reactTag,
+                    "videoInfo": videoInfo
+                ])
+                startProgressTimer()
+                stopBufferingTimer()
+                onVideoStarted?([
+                    "target": reactTag,
+                ])
+            case .esAdded:
+                NSLog("VLCMediaPlayerStateESAdded \(_player.numberOfAudioTracks)")
+            case .error:
+                NSLog("VLCMediaPlayerStateError \(_player.numberOfAudioTracks)")
+                onVideoError?([
+                    "target": reactTag,
+                ])
+                _release()
+            @unknown default:
+                NSLog("VLCMediaPlayerStateUnknown \(_player.numberOfAudioTracks)")
+                break
+            }
+        }
+    }
 }
 
 extension Collection {
