@@ -394,9 +394,6 @@ extension RCTVLCPlayer: VLCMediaPlayerDelegate {
                 ])
                 startProgressTimer()
                 stopBufferingTimer()
-                onVideoStarted?([
-                    "target": reactTag,
-                ])
             case .esAdded:
                 NSLog("VLCMediaPlayerStateESAdded \(_player.numberOfAudioTracks)")
             case .error:
