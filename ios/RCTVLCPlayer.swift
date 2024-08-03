@@ -315,13 +315,13 @@ class RCTVLCPlayer : UIView {
     }
     
     @objc private func updateBufferingProgress() {
-        _bufferingProgress += 10.0
+        _bufferingProgress += 5.0
         if _bufferingProgress > 100.0 {
             _bufferingProgress = 100.0
         }
         onVideoBuffering?([
             "target": reactTag,
-            "buffering": _bufferingProgress
+            "bufferRate": _bufferingProgress
         ])
     }
 }
@@ -364,7 +364,7 @@ extension RCTVLCPlayer: VLCMediaPlayerDelegate {
                 _videoInfo = getVideoInfo()
                 onVideoBuffering?([
                     "target": reactTag,
-                    "videoInfo": _videoInfo
+                    "bufferRate": _bufferingProgress,
                 ])
                 startBufferingTimer()
             case .ended:
